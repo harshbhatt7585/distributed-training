@@ -9,6 +9,8 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 import os
 
+os.environ['NCCL_DEBUG'] = "INFO"
+os.environ['NCCL_SOCKET_IFNAME'] = "ens5"
 
 def ddp_setup():
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
