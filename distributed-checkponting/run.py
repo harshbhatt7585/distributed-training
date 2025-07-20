@@ -29,7 +29,6 @@ from torch.distributed import init_process_group, destroy_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
 import os
-from torch.distributed.elastic.multiprocessing.errors import record
 import torch.distributed as dist
 
 os.environ['NCCL_DEBUG'] = "INFO"
@@ -41,6 +40,40 @@ def ddp_setup():
     local_rank = int(os.environ["LOCAL_RANK"])
     global_rank = int(os.environ["RANK"])
     return local_rank, global_rank
+
+
+
+def load_model(model, optimizer, checkpoint_path, local_rank, global_rank):
+    if global_rank == 1:
+        checkpoint = torch.load(checkpoint_path, map_location=f"cuda:{local_rank}")
+        model_state = checkpoint['model']
+        start_epoch = checkpoint['epoch']
+        optimizer_state = checkpoint['optimizer']
+
+        
+    else:
+        model_state = None
+        optimizer_state = None
+        start_epoch=0
+
+    model_state_list = [model_state]
+    opt_state_list = [optimizer_state]
+    epoch_list = [start_epoch]
+
+    dist.barrier()
+
+    dist.broadcast_object_list(model_state_list, src=1)
+    dist.broadcast_object_list(opt_state_list, src=1)
+    dist.broadcast_object_list(epoch_list, src=1)
+
+    # Unpack received state
+    model.module.load_state_dict(model_state_list[0])
+    optimizer.load_state_dict(opt_state_list[0])
+    start_epoch = epoch_list[0]
+
+    return model, optimizer, start_epoch
+
+
 
 class SimpleModel(nn.Module):
     def __init__(self):
@@ -69,16 +102,10 @@ def train(local_rank, global_rank):
     loader = DataLoader(dataset, batch_size=10, sampler=sampler)
     start_epoch = 0
 
-    if os.path.exists("checkpoint.pt"):
-        map_location = f"cuda:{local_rank}"
-        checkpoint = torch.load("checkpoint.pt", map_location=map_location)
-        model.module.load_state_dict(checkpoint["model"])
-        optimizer.load_state_dict(checkpoint["optimizer"])
-        # start_epoch = checkpoint["epoch"] + 1
-        print(f"[Rank {global_rank}] Resumed from checkpoint at epoch {start_epoch}")
-    
+    model, optimizer, start_epoch = load_model(model, optimizer, 'checkpoint.pt', local_rank, global_rank)
 
-    for epoch in range(start_epoch, 50):
+    print("Starting from EPOCH", start_epoch)
+    for epoch in range(start_epoch, 1000):
         sampler.set_epoch(epoch)
         for batch_x, batch_y in loader:
             batch_x, batch_y = batch_x.to(local_rank), batch_y.to(local_rank)
